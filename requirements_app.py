@@ -9,6 +9,7 @@ LEVEL_LABELS = {
     3: 'Sub-System / Interface Requirement',
     4: 'Software / Hardware Requirement',
 }
+LEVEL_LABELS_REVERSE = {label: level for level, label in LEVEL_LABELS.items()}
 
 
 class RequirementsApp:
@@ -46,7 +47,7 @@ class RequirementsApp:
         self.tree.heading('#0', text='Requirement')
         self.tree.heading('level', text='Level')
         self.tree.heading('summary', text='Summary')
-        self.tree.column('level', width=140, anchor='center')
+        self.tree.column('level',  width=140, anchor='center')
         self.tree.column('summary', width=320, anchor='w')
         self.tree.pack(fill='both', expand=True, side='left')
         self.tree.bind('<<TreeviewSelect>>', self.on_tree_select)
@@ -79,7 +80,7 @@ class RequirementsApp:
                 widget = tk.Text(frame, height=6, wrap='word')
                 widget.pack(fill='both', expand=True)
             elif field_name == 'level':
-                widget = ttk.Combobox(frame, values=list(LEVEL_LABELS.keys()), state='readonly')
+                widget = ttk.Combobox(frame, values=list(LEVEL_LABELS.values()), state='readonly')
                 widget.pack(fill='x', expand=True)
             elif field_name == 'parent':
                 widget = ttk.Combobox(frame, state='readonly')
@@ -111,8 +112,9 @@ class RequirementsApp:
 
         def insert_children(parent_id, parent_node=''):
             for row in sorted(by_parent.get(parent_id, []), key=lambda r: (r['level'], r['summary'])):
-                label = f"[{row['level']}] {row['summary']}"
-                item = self.tree.insert(parent_node, 'end', iid=row['id'], text=label, values=(LEVEL_LABELS.get(row['level'], str(row['level'])), row['summary']))
+                level_label = LEVEL_LABELS.get(row['level'], str(row['level']))
+                label = f"[{level_label}] {row['summary']}"
+                item = self.tree.insert(parent_node, 'end', iid=row['id'], text=label, values=(level_label, row['summary']))
                 insert_children(row['id'], item)
 
         insert_children(None)
@@ -143,7 +145,7 @@ class RequirementsApp:
         self.widgets['summary'].insert(0, row['summary'] or '')
         self.widgets['description'].delete('1.0', 'end')
         self.widgets['description'].insert('1.0', row['description'] or '')
-        self.widgets['level'].set(row['level'])
+        self.widgets['level'].set(LEVEL_LABELS.get(row['level'], str(row['level'])))
         parent_label = ''
         if row['parent_requirement_id']:
             parent = self.db.get_requirement(row['parent_requirement_id'])
@@ -164,7 +166,7 @@ class RequirementsApp:
         self.selected_id = None
         self.widgets['summary'].delete(0, 'end')
         self.widgets['description'].delete('1.0', 'end')
-        self.widgets['level'].set(0)
+        self.widgets['level'].set(LEVEL_LABELS[0])
         self.widgets['parent'].set('')
         self.widgets['custom_field_1'].delete(0, 'end')
         self.widgets['custom_field_2'].delete(0, 'end')
@@ -187,7 +189,7 @@ class RequirementsApp:
         self.widgets['summary'].delete(0, 'end')
         self.widgets['description'].delete('1.0', 'end')
         child_level = min(parent['level'] + 1, 4)
-        self.widgets['level'].set(child_level)
+        self.widgets['level'].set(LEVEL_LABELS.get(child_level, str(child_level)))
         self.widgets['parent'].set(f"{parent['summary']} ({parent['id'][:8]})")
         self.widgets['custom_field_1'].delete(0, 'end')
         self.widgets['custom_field_2'].delete(0, 'end')
@@ -198,7 +200,8 @@ class RequirementsApp:
     def save_changes(self):
         summary = self.widgets['summary'].get().strip()
         description = self.widgets['description'].get('1.0', 'end').strip()
-        level = int(self.widgets['level'].get())
+        level_label = self.widgets['level'].get()
+        level = LEVEL_LABELS_REVERSE.get(level_label, int(level_label) if level_label.isdigit() else 0)
         parent_label = self.widgets['parent'].get().strip()
         parent_id = self.parent_lookup.get(parent_label)
         custom_field_1 = self.widgets['custom_field_1'].get().strip()
