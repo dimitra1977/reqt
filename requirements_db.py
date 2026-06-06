@@ -1,3 +1,11 @@
+"""Small SQLite-backed persistence layer for requirements.
+
+This module exposes `RequirementDatabase` — a thin wrapper around SQLite
+that provides CRUD helpers for requirement records and a simple
+parent/child linkage table. The class is intentionally lightweight so
+it can be used from both the Tkinter desktop UI and the Flask web API.
+"""
+
 import sqlite3
 import uuid
 from pathlib import Path
@@ -13,6 +21,8 @@ CREATE TABLE IF NOT EXISTS requirements (
     description TEXT,
     parent_requirement_id TEXT REFERENCES requirements (id) ON DELETE SET NULL,
     primary_child_requirement_id TEXT REFERENCES requirements (id) ON DELETE SET NULL,
+    maturity TEXT,
+    lifecycle TEXT,
     custom_field_1 TEXT,
     custom_field_2 TEXT,
     custom_field_3 TEXT,
@@ -38,13 +48,13 @@ CREATE INDEX IF NOT EXISTS idx_requirement_links_child ON requirement_links (chi
 '''
 
 INSERT_SAMPLE_SQL = '''
-INSERT OR IGNORE INTO requirements (id, level, summary, description, custom_field_1, custom_field_2, custom_field_3, custom_field_4)
+INSERT OR IGNORE INTO requirements (id, level, summary, description, maturity, lifecycle)
 VALUES
-    ('00000000-0000-0000-0000-000000000001', 0, 'Product Search Feature', 'Supports product search across catalog.', 'Priority:High', 'Release:1.0', 'Owner:Product', 'Status:Draft'),
-    ('00000000-0000-0000-0000-000000000002', 1, 'Search by keyword', 'Users can search products using keywords.', 'Persona:Customer', 'Story Points:8', 'Epic:Search', 'Status:Draft'),
-    ('00000000-0000-0000-0000-000000000003', 2, 'Search engine integration', 'The system shall integrate with the search engine API.', 'Subsystem:Search', 'Performance:500ms', 'Test:Search API', 'Status:Draft'),
-    ('00000000-0000-0000-0000-000000000004', 3, 'API response handling', 'Handle search API responses and map to UI models.', 'Interface:REST', 'Tech:JSON', 'Team:Backend', 'Status:Draft'),
-    ('00000000-0000-0000-0000-000000000005', 4, 'Search engine client library', 'Use the search client library for hardware and software search components.', 'Platform:Linux', 'Tool:Java', 'Memory:512MB', 'Status:Draft');
+    ('00000000-0000-0000-0000-000000000001', 0, 'Climate Control', 'The vehicle shall support HVAC (Heating, Ventilation & Air Conditioning) with settings for driver and passenger zone temperature, fan speed, re-circulation and an auto mode where the system controls fan speed based on set temperature.', 'LM-0', 'DRAFT'),
+    ('00000000-0000-0000-0000-000000000002', 1, 'Setting temperature in auto mode', 'As a driver, I want to change the temperature,  so that I set a cabin environment I am comfortable with.', 'LM-0', 'DRAFT'),
+    ('00000000-0000-0000-0000-000000000003', 2, 'Climate Control Auto Mode Signal', 'Signal Name: ICC_HVACAutoMode_Req \n Signal Length: 2 bits\nPeriodicity: 1００ msec\nValue Table:\n    ０x００ : No Request\n    ０x０１ : Auto On\n    ０x０２ : Auto Off\n    ０x０３ : Invalid \n Sender: Infotainment \n Receivers: Climate Control, Telematics', 'LM-０', 'DRAFT'),
+    ('00000000-0000-0000-0000-000000000004', 3, 'Signal definition: Climate Control Auto Mode', 'Signal Name: ICC_HVACAutoMode_Req \n Signal Length: ２ bits\nPeriodicity: １００ msec\nValue Table:\n    ０x００ : No Request\n    ９x９１ : Auto On\n    ９x９２ : Auto Off\n    ９x９３ : Invalid \n Value Table:\n ９x９₀ : No Request \n ９x９１ : Auto On \n９x９２ : Auto Off\n ９x９３ : Invalid \nSender: Infotainment \nReceivers: Climate Control, Telematics', 'LM-Ｏ', 'DRAFT'),
+    ('00000000-0000-0000-0000-000000000005', 4, 'Infotainment: Auto Mode On', 'When the user presses the Auto Mode button to "On" state, ICC shall send the signal ICC_HVACAutoMode_Req with the value ｃｘｃ１: Auto On.', 'LM-Ｏ', 'DRAFT');
 
 INSERT OR IGNORE INTO requirement_links (parent_id, child_id)
 VALUES
@@ -56,22 +66,43 @@ VALUES
 
 
 class RequirementDatabase:
+    """Encapsulates SQLite operations for requirement objects.
+
+    The class opens a single SQLite connection per instance and exposes
+    convenience methods for querying and mutating requirement rows.
+    """
+
     def __init__(self, db_path: str = 'requirements.db'):
         self.db_path = Path(db_path)
+        # open a connection for this instance; callers are responsible for
+        # closing the connection via `close()` when appropriate
         self.connection = sqlite3.connect(str(self.db_path))
         self.connection.row_factory = sqlite3.Row
+        # ensure foreign keys are enforced for link integrity
         self.connection.execute('PRAGMA foreign_keys = ON;')
         self.initialize()
 
     def initialize(self) -> None:
+        """Create schema if missing and seed sample data when empty."""
         self.connection.executescript(DB_SCHEMA)
+        self._migrate_schema()
         self.connection.commit()
+        # seed data only when DB is empty to make first-run experience
         if not self.get_all_requirements():
             self._insert_sample_data()
+
+    def _migrate_schema(self) -> None:
+        columns = {row['name'] for row in self.connection.execute("PRAGMA table_info(requirements)").fetchall()}
+        if 'maturity' not in columns:
+            self.connection.execute('ALTER TABLE requirements ADD COLUMN maturity TEXT')
+        if 'lifecycle' not in columns:
+            self.connection.execute('ALTER TABLE requirements ADD COLUMN lifecycle TEXT')
 
     def _insert_sample_data(self) -> None:
         self.connection.executescript(INSERT_SAMPLE_SQL)
         self.connection.commit()
+        # requirement_links are populated via _sync_parent_links which
+        # keeps the denormalized parent fields in sync
         self._sync_parent_links()
 
     def _sync_parent_links(self) -> None:
@@ -88,16 +119,29 @@ class RequirementDatabase:
         return str(uuid.uuid4())
 
     def get_all_requirements(self, search: str = '') -> List[sqlite3.Row]:
+        """Return all requirements, optionally filtered by `search` term.
+
+        The `search` term is matched against summary, description and
+        the custom fields. An empty string returns all rows ordered by
+        level then summary.
+        """
         sql = 'SELECT * FROM requirements'
         params = ()
         if search:
-            sql += ' WHERE summary LIKE ? OR description LIKE ? OR custom_field_1 LIKE ? OR custom_field_2 LIKE ? OR custom_field_3 LIKE ? OR custom_field_4 LIKE ?'
+            sql += (
+                ' WHERE summary LIKE ? OR description LIKE ? OR custom_field_1 LIKE ? OR '
+                'custom_field_2 LIKE ? OR custom_field_3 LIKE ? OR custom_field_4 LIKE ?'
+            )
             term = f'%{search}%'
             params = (term, term, term, term, term, term)
         sql += ' ORDER BY level, summary'
         return self.connection.execute(sql, params).fetchall()
 
     def get_requirement(self, requirement_id: str) -> Optional[sqlite3.Row]:
+        """Lookup a single requirement by `id`.
+
+        Returns `None` when the requirement does not exist.
+        """
         return self.connection.execute('SELECT * FROM requirements WHERE id = ?', (requirement_id,)).fetchone()
 
     def get_children(self, parent_id: str) -> List[sqlite3.Row]:
@@ -112,19 +156,20 @@ class RequirementDatabase:
         description: str,
         level: int,
         parent_requirement_id: Optional[str] = None,
-        custom_field_1: Optional[str] = None,
-        custom_field_2: Optional[str] = None,
-        custom_field_3: Optional[str] = None,
-        custom_field_4: Optional[str] = None,
+        maturity: Optional[str] = None,
+        lifecycle: Optional[str] = None,
+      
     ) -> str:
         requirement_id = self._generate_id()
+        # perform the insert and ensure the link table contains the
+        # appropriate parent->child relationship when a parent is
+        # provided
         self.connection.execute(
             '''
             INSERT INTO requirements (
                 id, level, summary, description,
-                parent_requirement_id, custom_field_1, custom_field_2,
-                custom_field_3, custom_field_4
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                parent_requirement_id, maturity, lifecycle
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 requirement_id,
@@ -132,10 +177,8 @@ class RequirementDatabase:
                 summary,
                 description,
                 parent_requirement_id,
-                custom_field_1,
-                custom_field_2,
-                custom_field_3,
-                custom_field_4,
+                maturity,
+                lifecycle,
             ),
         )
         if parent_requirement_id:
@@ -150,27 +193,27 @@ class RequirementDatabase:
         description: Optional[str] = None,
         level: Optional[int] = None,
         parent_requirement_id: Optional[str] = None,
-        custom_field_1: Optional[str] = None,
-        custom_field_2: Optional[str] = None,
-        custom_field_3: Optional[str] = None,
-        custom_field_4: Optional[str] = None,
+        maturity: Optional[str] = None,
+        lifecycle: Optional[str] = None,
     ) -> None:
         row = self.get_requirement(requirement_id)
         if row is None:
+            # silently ignore updates to non-existent rows to keep
+            # the API idempotent; callers can check existence first
             return
         summary = summary if summary is not None else row['summary']
         description = description if description is not None else row['description']
         level = level if level is not None else row['level']
-        custom_field_1 = custom_field_1 if custom_field_1 is not None else row['custom_field_1']
-        custom_field_2 = custom_field_2 if custom_field_2 is not None else row['custom_field_2']
-        custom_field_3 = custom_field_3 if custom_field_3 is not None else row['custom_field_3']
-        custom_field_4 = custom_field_4 if custom_field_4 is not None else row['custom_field_4']
+        maturity = maturity if maturity is not None else row['maturity']
+        lifecycle = lifecycle if lifecycle is not None else row['lifecycle']
 
+
+        # update the denormalized parent id and maturity/lifecycle fields
         self.connection.execute(
             '''
             UPDATE requirements
             SET summary = ?, description = ?, level = ?, parent_requirement_id = ?,
-                custom_field_1 = ?, custom_field_2 = ?, custom_field_3 = ?, custom_field_4 = ?,
+                maturity = ?, lifecycle = ?,
                 updated_at = datetime('now')
             WHERE id = ?
             ''',
@@ -179,10 +222,8 @@ class RequirementDatabase:
                 description,
                 level,
                 parent_requirement_id,
-                custom_field_1,
-                custom_field_2,
-                custom_field_3,
-                custom_field_4,
+                maturity,
+                lifecycle,
                 requirement_id,
             ),
         )
@@ -190,6 +231,7 @@ class RequirementDatabase:
         self.connection.commit()
 
     def delete_requirement(self, requirement_id: str) -> None:
+        """Delete a requirement. Foreign key constraints cascade to links."""
         self.connection.execute('DELETE FROM requirements WHERE id = ?', (requirement_id,))
         self.connection.commit()
 

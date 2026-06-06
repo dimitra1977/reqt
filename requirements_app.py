@@ -1,6 +1,15 @@
+"""Tkinter desktop application for browsing and editing requirements.
+
+This module provides `RequirementsApp`, a small GUI that uses
+`RequirementDatabase` to display a hierarchy of requirements and allow
+basic CRUD operations. The UI is intentionally simple and relies on
+the database layer for persistence and parent/child link maintenance.
+"""
+
 import tkinter as tk
 from tkinter import ttk, messagebox
 from requirements_db import RequirementDatabase
+
 
 LEVEL_LABELS = {
     0: 'Feature',
@@ -13,10 +22,18 @@ LEVEL_LABELS_REVERSE = {label: level for level, label in LEVEL_LABELS.items()}
 
 
 class RequirementsApp:
+    """Main GUI class for the requirements browser.
+
+    The class owns a `RequirementDatabase` instance and the Tk root
+    window. It exposes `run()` which starts the Tk event loop.
+    """
+
     def __init__(self):
+        # persistence layer for reading/writing requirements
         self.db = RequirementDatabase('requirements.db')
         self.selected_id = None
 
+        # main window
         self.root = tk.Tk()
         self.root.title('Requirements Browser')
         self.root.geometry('1100x640')
@@ -25,6 +42,11 @@ class RequirementsApp:
         self.refresh_tree()
 
     def build_ui(self):
+        """Construct the UI widgets and layout.
+
+        Widgets are stored in `self.widgets` keyed by field name which
+        simplifies read/write operations when saving or populating data.
+        """
         search_frame = ttk.Frame(self.root, padding=(12, 12, 12, 6))
         search_frame.pack(fill='x')
 
@@ -103,6 +125,9 @@ class RequirementsApp:
         self.status_label.pack(fill='x')
 
     def refresh_tree(self):
+        # rebuild the tree from the database; this is a simple full
+        # refresh rather than a diffing operation which keeps the
+        # implementation straightforward
         self.tree.delete(*self.tree.get_children())
         search_text = self.search_var.get().strip()
         rows = self.db.get_all_requirements(search_text)
@@ -122,7 +147,9 @@ class RequirementsApp:
         self.status_label.config(text=f'Loaded {len(rows)} requirements')
 
     def populate_parent_options(self, rows):
+        # Prepare the human-friendly labels shown in the parent combobox
         options = [''] + [f"{row['summary']} ({row['id'][:8]})" for row in rows]
+        # map labels back to ids for saving
         self.parent_lookup = {f"{row['summary']} ({row['id'][:8]})": row['id'] for row in rows}
         self.widgets['parent']['values'] = options
         self.widgets['parent'].set('')

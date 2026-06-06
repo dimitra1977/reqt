@@ -1,0 +1,4 @@
+body { background: #f8f9fa; }
+.requirements-tree ul { list-style: none; padding-left: 1rem; }
+.requirements-tree li { padding: 4px 0; cursor: pointer; }
+.requirements-tree li:hover { background: rgba(0,0,0,0.03); }
